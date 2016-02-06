@@ -1,78 +1,44 @@
 package main
 
 import (
-	"fmt"
-	"io"
+	"crypto/tls"
 	"log"
+	"net"
 	"net/http"
-	"net/http/httputil"
 )
 
-func printRaw(req *http.Request) {
-	raw, err := httputil.DumpRequest(req, true)
-	if err != nil {
-		fmt.Println("DumpRequest: ", err)
-		return
-	}
-	fmt.Printf("%s\n", raw)
+type OServer struct {
+	*http.Server
 }
 
-type Proxy struct {
-	Client http.Client
+// ListenAndServeTLS() of http.Server configure one certificate in a tls.Config
+// from a given certFile. We want to override that. Instead, we need a filename
+// containing a private key for issuing certificates.
+func (srv *OServer) ListenAndServeTLS(keyFile string) error {
+	ln, err := net.Listen("tcp", srv.Addr)
+	if err != nil {
+		return err
+	}
+	config := new(tls.Config)
+	tlsListener := tls.NewListener(ln.(*net.TCPListener), config)
+	return srv.Serve(tlsListener)
 }
 
-// See https://golang.org/src/net/http/httputil/reverseproxy.go
-func (p *Proxy) Serve(rw http.ResponseWriter, in *http.Request) {
-	out := new(http.Request)
-	*out = *in // Shallow copy apparently
+func ListenAndServeTLS(addr string, keyFile string, handler http.Handler) error {
+	server := &OServer{&http.Server{Addr: addr, Handler: handler}}
+	return server.ListenAndServeTLS(keyFile)
+}
 
-	// It's an error for RequestURI to be set in a client request
-	out.RequestURI = ""
-	out.URL.Scheme = "http"
-	out.URL.Host = in.Host // From the Host header
-
-	// XXX Refuse localhost & co.
-
-	out.URL.Path = in.URL.Path
-
-	log.Println("Forwarding: ", out.URL)
-
-	// XXX Query string
-
-	resp, err := p.Client.Do(out)
-	if err != nil {
-		log.Println("Do: ", err)
-		return
-	}
-
-	var rh http.Header = rw.Header()
-	for key, values := range resp.Header {
-		for _, v := range values {
-			rh.Add(key, v)
-		}
-	}
-
-	rw.WriteHeader(resp.StatusCode)
-
-	b := make([]byte, 16)
-	defer resp.Body.Close()
-	for {
-		n, err := resp.Body.Read(b)
-		rw.Write(b[:n])
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			log.Println("Body.Read: ", err)
-			return
-		}
-	}
+func handler(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", "text/plain")
+	w.Write([]byte("This is an example server.\n"))
 }
 
 func main() {
-	p := new(Proxy)
-	http.HandleFunc("/", p.Serve)
-	err := http.ListenAndServe(":8000", nil)
+	http.HandleFunc("/", handler)
+	log.Printf("About to listen on 10443. Go to https://127.0.0.1:10443/")
+	err := ListenAndServeTLS(":10443", "key.pem", nil)
 	if err != nil {
-		log.Fatal("ListenAndServe: ", err)
+		log.Fatal(err)
 	}
 }
