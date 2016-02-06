@@ -7,26 +7,39 @@ import (
 	"net/http"
 )
 
-type OServer struct {
-	*http.Server
+type certIssuer struct {
+	CACert *tls.Certificate
 }
 
-// ListenAndServeTLS() of http.Server configure one certificate in a tls.Config
-// from a given certFile. We want to override that. Instead, we need a filename
-// containing a private key for issuing certificates.
-func (srv *OServer) ListenAndServeTLS(keyFile string) error {
-	ln, err := net.Listen("tcp", srv.Addr)
+func (ci *certIssuer) getCertificate(clientHello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	log.Printf("getCertificate called.")
+	// derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, publicKey(priv), priv)
+	return nil, nil
+}
+
+// Looks like http.ListenAndServeTLS() but here the certificate & the private
+// key are going to be used to issue new certificates as they are requested.
+func ListenAndServeTLS(addr string, certFile string, keyFile string, handler http.Handler) error {
+
+	server := http.Server{Addr: addr, Handler: handler}
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
-	config := new(tls.Config)
-	tlsListener := tls.NewListener(ln.(*net.TCPListener), config)
-	return srv.Serve(tlsListener)
-}
 
-func ListenAndServeTLS(addr string, keyFile string, handler http.Handler) error {
-	server := &OServer{&http.Server{Addr: addr, Handler: handler}}
-	return server.ListenAndServeTLS(keyFile)
+	var issuer *certIssuer
+	if certFile != "" || keyFile != "" {
+		caCert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return err
+		}
+		issuer = &certIssuer{CACert: &caCert}
+	}
+
+	config := &tls.Config{GetCertificate: issuer.getCertificate}
+	tlsListener := tls.NewListener(ln.(*net.TCPListener), config)
+
+	return server.Serve(tlsListener)
 }
 
 func handler(w http.ResponseWriter, req *http.Request) {
@@ -37,7 +50,7 @@ func handler(w http.ResponseWriter, req *http.Request) {
 func main() {
 	http.HandleFunc("/", handler)
 	log.Printf("About to listen on 10443. Go to https://127.0.0.1:10443/")
-	err := ListenAndServeTLS(":10443", "key.pem", nil)
+	err := ListenAndServeTLS(":10443", "cert_test.pem", "key_test.pem", nil)
 	if err != nil {
 		log.Fatal(err)
 	}
